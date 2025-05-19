@@ -23,9 +23,10 @@ type Config struct {
 	DatabaseData   DatabaseData   `yaml:"database_data"`
 }
 
+var cfg Config
+
 type Bot struct {
 	SendArchiveOnStart bool `yaml:"send_archive_on_start"`
-	BotPolling         bool `yaml:"polling"`
 }
 
 type Archive struct {
@@ -76,7 +77,6 @@ func main() {
 		panic(err)
 	}
 
-	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		panic(err)
 	}
@@ -89,10 +89,8 @@ func main() {
 	}
 
 	updates, _ := bot.UpdatesViaLongPolling(ctx, nil)
-
 	log.Println("Polling started")
 	_, _ = bot.SendMessage(ctx, tu.Message(tu.ID(5259467241), "Polling started"))
-
 	bh, _ := th.NewBotHandler(bot, updates)
 
 	bh.Handle(func(ctx *th.Context, update telego.Update) error {
@@ -113,14 +111,30 @@ func main() {
 	}, th.CommandEqual("start"))
 
 	bh.Handle(func(ctx *th.Context, update telego.Update) error {
-		_, _ = bot.SendMessage(ctx, tu.Message(
-			tu.ID(update.Message.Chat.ID),
-			"Unknown command, use /start",
-		))
+		backupCmdHandler(update)
 		return nil
-	}, th.AnyCommand())
+	}, th.CommandEqual("backup"))
 
 	defer func() { _ = bh.Stop() }()
 
 	_ = bh.Start()
+}
+
+func backupCmdHandler(update telego.Update) error {
+	var message_chat_id int64
+	var message_therad_id int
+	if update.Message.Chat.ID != 0 {
+		message_chat_id = update.Message.Chat.ID
+	} else {
+		message_chat_id = cfg.BackupChatData.ID
+	}
+	if update.Message.MessageThreadID == 0 {
+		message_therad_id = update.Message.MessageThreadID
+	} else {
+		message_therad_id = cfg.BackupChatData.ThreadID
+	}
+
+	fmt.Println(message_chat_id)
+	fmt.Println(message_therad_id)
+	return nil
 }
