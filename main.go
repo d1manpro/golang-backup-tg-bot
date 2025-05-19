@@ -6,22 +6,83 @@ import (
 	"log"
 	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
+	"gopkg.in/yaml.v3"
 )
 
+type Config struct {
+	BotToken       string         `yaml:"token"`
+	Bot            Bot            `yaml:"bot"`
+	Archive        Archive        `yaml:"archive"`
+	IncludeData    IncludeData    `yaml:"include_data"`
+	Admins         []int64        `yaml:"admins"`
+	BackupChatData BackupChatData `yaml:"backup_chat_data"`
+	ClientApiData  ClientApiData  `yaml:"client_api_data"`
+	DatabaseData   DatabaseData   `yaml:"database_data"`
+}
+
+type Bot struct {
+	SendArchiveOnStart bool `yaml:"send_archive_on_start"`
+	BotPolling         bool `yaml:"polling"`
+}
+
+type Archive struct {
+	ExcludeFiles  []string     `yaml:"exclude_files"`
+	ExcludeDirs   []string     `yaml:"exclude_dirs"`
+	ArchiveName   string       `yaml:"archive_name"`
+	TempBackupDir string       `yaml:"temp_backup_dir"`
+	Timezone      string       `yaml:"timezone"`
+	BackupTime    []BackupTime `yaml:"backup_time"`
+}
+
+type BackupTime struct {
+	Hour   int `yaml:"hour"`
+	Minute int `yaml:"minute"`
+}
+
+type IncludeData struct {
+	Dirs      []PathMap `yaml:"dirs"`
+	Files     []PathMap `yaml:"files"`
+	Databases []string  `yaml:"databases"`
+}
+
+type PathMap struct {
+	Path        string `yaml:"path"`
+	ArchivePath string `yaml:"archive_path"`
+}
+
+type BackupChatData struct {
+	ID       int64 `yaml:"id"`
+	ThreadID int   `yaml:"thread_id"`
+}
+
+type ClientApiData struct {
+	ID   int    `yaml:"id"`
+	Hash string `yaml:"hash"`
+}
+
+type DatabaseData struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+}
+
 func main() {
-	err := godotenv.Load()
+	data, err := os.ReadFile("backup_config.yml")
 	if err != nil {
-		log.Fatal("Ошибка загрузки .env файла")
+		panic(err)
 	}
 
-	botToken := os.Getenv("TOKEN")
-	ctx := context.Background()
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		panic(err)
+	}
 
-	bot, err := telego.NewBot(botToken)
+	ctx := context.Background()
+	bot, err := telego.NewBot(cfg.BotToken)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -41,7 +102,12 @@ func main() {
 				"The /start command has been successfully processed. ChatID <code>%d</code>, ThreadID <code>%d</code>",
 				update.Message.Chat.ID,
 				update.Message.MessageThreadID,
-			)).WithParseMode("HTML"),
+			)).WithParseMode("HTML").WithMessageThreadID(update.Message.MessageThreadID),
+		)
+		log.Printf(
+			"The /start command has been successfully processed. ChatID %d</code>, ThreadID %d</code>",
+			update.Message.Chat.ID,
+			update.Message.MessageThreadID,
 		)
 		return nil
 	}, th.CommandEqual("start"))
