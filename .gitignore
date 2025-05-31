@@ -25,3 +25,5 @@ go.work.sum
 .env
 
 backup_config.yml
+backup_*_*_*.tar.gz
+*.log

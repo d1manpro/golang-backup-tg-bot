@@ -30,6 +30,7 @@ type Config struct {
 	BackupChatData BackupChatData `yaml:"backup_chat_data"`
 	ClientApiData  ClientApiData  `yaml:"client_api_data"`
 	DatabaseData   DatabaseData   `yaml:"database_data"`
+	LogFile        bool           `yaml:"enable_log_file"`
 }
 
 var cfg Config
@@ -45,7 +46,7 @@ type Archive struct {
 	ArchiveName   string   `yaml:"archive_name"`
 	TempBackupDir string   `yaml:"temp_backup_dir"`
 	Timezone      string   `yaml:"timezone"`
-	BackupTime    []string `yaml:"backup_time"`
+	BackupTime    []string `yaml:"backup_times"`
 }
 
 type IncludeData struct {
@@ -81,14 +82,26 @@ func setupLogger() *zap.Logger {
 		TimeKey:     "time",
 		LevelKey:    "level",
 		MessageKey:  "msg",
-		EncodeTime:  zapcore.TimeEncoderOfLayout("[2006.01.02][15:04:05]"),
+		EncodeTime:  zapcore.TimeEncoderOfLayout("2006.01.02 15:04:05.000"),
 		EncodeLevel: zapcore.CapitalLevelEncoder,
 	}
 
 	encoder := zapcore.NewConsoleEncoder(encoderCfg)
 	consoleCore := zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), zapcore.InfoLevel)
 
-	logger := zap.New(consoleCore)
+	var cores []zapcore.Core
+	cores = append(cores, consoleCore)
+
+	if cfg.LogFile {
+		logFile, err := os.OpenFile("backupbot.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			panic(fmt.Sprintf("cannot open log file: %v", err))
+		}
+		fileCore := zapcore.NewCore(encoder, zapcore.AddSync(logFile), zapcore.InfoLevel)
+		cores = append(cores, fileCore)
+	}
+
+	logger := zap.New(zapcore.NewTee(cores...))
 	return logger
 }
 
@@ -97,12 +110,15 @@ var logger = setupLogger()
 func main() {
 	data, err := os.ReadFile("backup_config.yml")
 	if err != nil {
-		logger.Fatal("Failed to load config file", zap.Error(err))
+		panic(fmt.Sprintf("Failed to load config file: %v", err))
 	}
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		logger.Fatal(fmt.Sprintf("%v", err))
+		panic(fmt.Sprintf("Failed to parse config: %v", err))
 	}
+
+	logger = setupLogger()
+	logger.Info("\n\nBot started\n")
 
 	ctx := context.Background()
 	bot, err := telego.NewBot(cfg.Bot.BotToken)
@@ -180,37 +196,40 @@ func main() {
 func sendBackup(bot *telego.Bot, ctx context.Context, message_chat_id int64, message_therad_id int) {
 	archive_file, err := createArchive()
 	if err != nil {
-		logger.Error("Failed to open created archive", zap.Error(err))
+		logger.Error("Failed to open archive to send", zap.Error(err))
 	}
 
-	_, _ = bot.SendMessage(ctx, tu.Message(
-		tu.ID(message_chat_id),
-		fmt.Sprintf(
-			"The /backup command has been successfully processed. ChatID <code>%d</code>, ThreadID <code>%d</code>",
-			message_chat_id,
-			message_therad_id,
-		)).WithParseMode("HTML").WithMessageThreadID(message_therad_id),
-	)
+	defer func() {
+		archive_file.Close()
+		os.Remove(archive_file.Name())
+	}()
 
 	_, err = bot.SendDocument(ctx, tu.Document(
 		tu.ID(message_chat_id),
 		tu.File(archive_file),
 	).WithMessageThreadID(message_therad_id))
 	if err != nil {
-		logger.Error("Failed to send archive", zap.Error(err))
+		logger.Error("Failed to send archive", zap.String("archive_name", archive_file.Name()), zap.Error(err))
+
+		_, _ = bot.SendMessage(ctx, tu.Message(
+			tu.ID(message_chat_id),
+			fmt.Sprintf("Failed to send archive <code>%v</code>: %v", archive_file.Name(), err),
+		).WithParseMode("HTML").WithMessageThreadID(message_therad_id),
+		)
 	}
 }
 
-//func mustOpen(filename string) *os.File {
-//	file, err := os.Open(filename)
-//	if err != nil {
-//		panic(err)
-//	}
-//	return file
-//}
-
 func createArchive() (*os.File, error) {
-	outFile, err := os.Create("backup.tar.gz")
+	loc, _ := time.LoadLocation(cfg.Archive.Timezone)
+
+	timestamp := time.Now().In(loc).Format("2006-01-02_15-04-05")
+	hostname, err := os.Hostname()
+	if err != nil {
+		logger.Warn("Failed to get hostname", zap.Error(err))
+	}
+
+	outFile, err := os.Create(fmt.Sprintf("backup_%s_%s.tar.gz", hostname, timestamp))
+
 	if err != nil {
 		logger.Error("Failed to create archive file", zap.Error(err))
 	}
@@ -237,7 +256,7 @@ func expandPath(path string) string {
 	if strings.HasPrefix(path, "~") {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return path // не удалось получить домашнюю директорию — вернём как есть
+			return path
 		}
 		return strings.Replace(path, "~", homeDir, 1)
 	}
@@ -278,7 +297,8 @@ func addFile(tw *tar.Writer, path, archivePath string) error {
 	return nil
 }
 
-func addDir(tw *tar.Writer, srcDir, archiveRoot string) {
+func addDir(tw *tar.Writer, cfg_srcDir, archiveRoot string) {
+	srcDir := expandPath(cfg_srcDir)
 	filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
